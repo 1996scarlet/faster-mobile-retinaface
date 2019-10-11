@@ -55,23 +55,22 @@ class BaseDetection:
         order = scores.argsort()[::-1]
 
         while order.size > 0:
-            i, *j = order
+            keep, others = order[0], order[1:]
 
-            yield dets[i]
+            yield dets[keep]
 
-            xx1 = maximum(x1[i], x1[j])
-            yy1 = maximum(y1[i], y1[j])
-            xx2 = minimum(x2[i], x2[j])
-            yy2 = minimum(y2[i], y2[j])
+            xx1 = maximum(x1[keep], x1[others])
+            yy1 = maximum(y1[keep], y1[others])
+            xx2 = minimum(x2[keep], x2[others])
+            yy2 = minimum(y2[keep], y2[others])
 
             w = maximum(0.0, xx2 - xx1 + 1)
             h = maximum(0.0, yy2 - yy1 + 1)
 
             inter = w * h
-            ovr = inter / (areas[i] - inter + areas[j])
+            ovr = inter / (areas[keep] - inter + areas[others])
 
-            order = order[1:][ovr < thresh]
-
+            order = others[ovr < thresh]
 
     def non_maximum_selection(self, x):
         return x[:1]
@@ -192,8 +191,7 @@ class MxnetDetectionModel(BaseDetection):
 
         Usage
         -----
-        >>> for out, scale in self._retina_forward(src, scales):
-        >>>     pass
+        >>> out = self._retina_forward(frame)
         '''
 
         # timea = time.perf_counter()
