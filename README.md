@@ -1,6 +1,8 @@
 # Face Detection @ 500-1000 FPS
-Reimplementation of retinaface, faster and stronger.
-![Image of FRF](src/title.webp)
+Reimplementation of [RetinaFace](https://github.com/deepinsight/insightface/tree/master/RetinaFace), faster and stronger.
+
+* [RetinaFace: Single-stage Dense Face Localisation in the Wild](https://arxiv.org/abs/1905.00641)
+
 
 ## Getting Start
 
@@ -35,6 +37,8 @@ Reimplementation of retinaface, faster and stronger.
     | Jetson-Nano | 4.6ms | 11.4ms | 80~200
     
     If the queue is bigger enough, the throughput capacity can reach the highest.
+
+![Image of FRF](src/title.webp)
 
 ## Citation
 

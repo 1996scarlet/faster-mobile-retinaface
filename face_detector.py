@@ -35,7 +35,11 @@ class BaseDetection:
         margin_x = (b[2] - b[0]) * self.margin
         margin_y = (b[3] - b[1]) * self.margin
 
-        b += (-margin_x, -margin_y, margin_x, margin_y, 0.0)
+        b[0] -= margin_x
+        b[1] -= margin_y
+        b[2] += margin_x
+        b[3] += margin_y
+
         return np.clip(b, 0, None, out=b)
 
     @staticmethod
@@ -225,7 +229,10 @@ class MxnetDetectionModel(BaseDetection):
 
             if outstream is None:
                 for res in self._nms_wrapper(detach):
+                    st = time.perf_counter()
                     self.margin_clip(res)
+                    print(f'margin_clip: {time.perf_counter() - st}')
+
                     cv2.rectangle(frame, (res[0], res[1]),
                                   (res[2], res[3]), (255, 255, 0))
 
