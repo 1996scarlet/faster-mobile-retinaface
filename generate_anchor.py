@@ -3,18 +3,12 @@ Generate base anchors on index 0
 """
 import sys
 import numpy as np
-from ..cython.anchors import anchors_cython
-from mxnet.ndarray import exp
 
 anchors = {
     32: {'SCALES': (32, 16), 'BASE_SIZE': 16, 'RATIOS': (1., ), 'ALLOWED_BORDER': 0},
     16: {'SCALES': (8, 4), 'BASE_SIZE': 16, 'RATIOS': (1., ), 'ALLOWED_BORDER': 0},
     # '8': {'SCALES': (2, 1), 'BASE_SIZE': 16, 'RATIOS': (1., ), 'ALLOWED_BORDER': 9999},
 }
-
-
-def anchors_plane(feat_h, feat_w, stride, base_anchor):
-    return anchors_cython(feat_h, feat_w, stride, base_anchor)
 
 
 def generate_anchors(base_size=16, ratios=[0.5, 1, 2],
@@ -137,46 +131,10 @@ def nonlinear_pred(boxes, box_deltas):
         dw *= 0.5
 
         dx -= dw
-        dw *= 2.0
+        dw += dw
         dw += dx
 
         dy -= dh
-        dh *= 2.0
+        dh += dh
         dh += dy
 
-# def nonlinear_pred(boxes, box_deltas):
-#     if boxes.size:
-#         ctr_x, ctr_y, widths, heights = boxes.T
-#         widths -= ctr_x
-#         heights -= ctr_y
-
-#         widths += 1.0
-#         heights += 1.0
-
-#         dx, dy, dw, dh = box_deltas.T
-
-#         dx *= widths
-#         dx += ctr_x
-#         dx += 0.5 * widths
-
-#         dy *= heights
-#         dy += ctr_y
-#         dy += 0.5 * heights
-
-#         exp(dh, out=dh)
-#         dh *= heights
-#         dh -= 1.0
-#         dh *= 0.5
-
-#         exp(dw, out=dw)
-#         dw *= widths
-#         dw -= 1.0
-#         dw *= 0.5
-
-#         dx -= dw
-#         dw *= 2.0
-#         dw += dx
-
-#         dy -= dh
-#         dh *= 2.0
-#         dh += dy

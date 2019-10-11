@@ -10,30 +10,26 @@ import cv2
 import time
 from queue import Queue
 
-from rcnn.processing.generate_anchor import generate_anchors_fpn, nonlinear_pred
-from rcnn.processing.nms import gpu_nms_wrapper, cpu_nms_wrapper
-from numpy import frombuffer, uint8, concatenate, float32, block
+from generate_anchor import generate_anchors_fpn, nonlinear_pred
+from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum
 from functools import partial
 
 from threading import Thread
 
 
 class BaseDetection:
-    def __init__(self, *, thd, gpu, margin, nms_thd, nms_type, verbose):
+    def __init__(self, *, thd, gpu, margin, nms_thd, verbose):
         self.threshold = thd
         self.nms_threshold = nms_thd
         self.device = gpu
         self.margin = margin
 
-        self._queue = Queue(2)
+        self._queue = Queue(4)
         self.write_queue = self._queue.put_nowait
         self.read_queue = iter(self._queue.get, b'')
 
-        if nms_type == 'cpu':
-            self._nms_wrapper = cpu_nms_wrapper(self.nms_threshold)
-        else:
-            self._nms_wrapper = gpu_nms_wrapper(
-                self.nms_threshold, self.device)
+        self._nms_wrapper = partial(
+            self.non_maximum_suppression, thresh=self.nms_threshold)
 
     def margin_clip(self, b):
         margin_x = (b[2] - b[0]) * self.margin
@@ -42,14 +38,46 @@ class BaseDetection:
         b += (-margin_x, -margin_y, margin_x, margin_y, 0.0)
         return np.clip(b, 0, None, out=b)
 
-    def non_maximum_suppression(self, x):
-        return x[self._nms_wrapper(x)]
+    @staticmethod
+    def non_maximum_suppression(dets, thresh):
+        """
+        greedily select boxes with high confidence and overlap with current maximum <= thresh
+        rule out overlap >= thresh
+        :param dets: [[x1, y1, x2, y2 score]]
+        :param thresh: retain overlap < thresh
+        :return: indexes to keep
+        """
+        # thresh = 0.99
+
+        x1, y1, x2, y2, scores = dets.T
+
+        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+        order = scores.argsort()[::-1]
+
+        while order.size > 0:
+            i, *j = order
+
+            yield dets[i]
+
+            xx1 = maximum(x1[i], x1[j])
+            yy1 = maximum(y1[i], y1[j])
+            xx2 = minimum(x2[i], x2[j])
+            yy2 = minimum(y2[i], y2[j])
+
+            w = maximum(0.0, xx2 - xx1 + 1)
+            h = maximum(0.0, yy2 - yy1 + 1)
+
+            inter = w * h
+            ovr = inter / (areas[i] - inter + areas[j])
+
+            order = order[1:][ovr < thresh]
+
 
     def non_maximum_selection(self, x):
         return x[:1]
 
-    def detect(self, src, **kwargs):
-        raise NotImplementedError('Not Implemented Function: detect')
+    # def detect(self, src, **kwargs):
+    #     raise NotImplementedError('Not Implemented Function: detect')
 
     @staticmethod
     def filter_boxes(boxes, min_size, max_size=-1):
@@ -65,10 +93,9 @@ class BaseDetection:
 
 class MxnetDetectionModel(BaseDetection):
     def __init__(self, prefix, epoch, scale, gpu=-1, thd=0.5, margin=0,
-                 nms_thd=0.4, nms_type='cpu', verbose=False):
+                 nms_thd=0.4, verbose=False):
 
-        super().__init__(thd=thd, gpu=gpu, margin=margin,
-                         nms_thd=nms_thd, nms_type=nms_type, verbose=verbose)
+        super().__init__(thd=thd, gpu=gpu, margin=margin, nms_thd=nms_thd, verbose=verbose)
 
         self.scale = scale
         self._rescale = partial(cv2.resize, dsize=None, fx=self.scale,
@@ -119,8 +146,6 @@ class MxnetDetectionModel(BaseDetection):
                                     axis=1).reshape(height*width, 1, 4)
             all_anchors += base_anchors
 
-            # all_anchors = nd.from_numpy(all_anchors).as_in_context(self._ctx)
-
             self._runtime_anchors[key] = all_anchors
 
             return all_anchors
@@ -130,9 +155,7 @@ class MxnetDetectionModel(BaseDetection):
     def _retina_detach(self, out, scale):
         out = map(lambda x: x.asnumpy(), out)
 
-        def deal_with_fpn(fpn):
-            scores, deltas = next(out), next(out)
-
+        def deal_with_fpn(fpn, scores, deltas):
             anchors = self._anchors_plane(
                 *deltas.shape[-2:], *fpn).reshape((-1, 4))
 
@@ -147,7 +170,7 @@ class MxnetDetectionModel(BaseDetection):
 
             return [proposals / scale, scores[mask]]
 
-        return block([deal_with_fpn(fpn) for fpn in self._fpn_anchors])
+        return block([deal_with_fpn(fpn, next(out), next(out)) for fpn in self._fpn_anchors])
 
     def _retina_forward(self, src):
         ''' ##### Author 1996scarlet@gmail.com
@@ -183,7 +206,7 @@ class MxnetDetectionModel(BaseDetection):
 
     def workflow_inference(self, instream):
         for source in instream:
-            st = time.perf_counter()
+            # st = time.perf_counter()
             frame = frombuffer(source, dtype=uint8).reshape(V_H, V_W, V_C)
             out = self._retina_forward(frame)
 
@@ -193,21 +216,21 @@ class MxnetDetectionModel(BaseDetection):
                 nd.waitall()
                 print('Frame queue full', file=sys.stderr)
 
-            print(f'workflow_inference: {time.perf_counter() - st}')
+            # print(f'workflow_inference: {time.perf_counter() - st}')
 
     def workflow_postprocess(self, outstream=None):
         for frame, out in self.read_queue:
-            st = time.perf_counter()
+            # st = time.perf_counter()
             detach = self._retina_detach(out, self.scale)
-            dets = self.non_maximum_selection(detach)  # 1.7 us
-            # dets = self.non_maximum_suppression(dets)  # 0.2 ms
-            res = self.margin_clip(dets[0]) if dets.size else None
-            print(f'workflow_postprocess: {time.perf_counter() - st}')
+            # dets = self.non_maximum_selection(detach)  # 1.7 us
+            # print(f'workflow_postprocess: {time.perf_counter() - st}')
 
             if outstream is None:
-                if res is not None:
+                for res in self._nms_wrapper(detach):
+                    self.margin_clip(res)
                     cv2.rectangle(frame, (res[0], res[1]),
                                   (res[2], res[3]), (255, 255, 0))
+
                 cv2.imshow('res', frame)
                 cv2.waitKey(1)
             else:
