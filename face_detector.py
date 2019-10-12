@@ -144,33 +144,43 @@ class MxnetDetectionModel(BaseDetection):
         return self._runtime_anchors[key]
 
     def _retina_solving(self, out):
-        """
+        ''' ##### Author 1996scarlet@gmail.com
+        Solving bounding boxes.
+
         Parameters
         ----------
-        height: height of plane
-        width:  width of plane
-        stride: stride ot the original image
-        anchors_base: (A, 4) a base set of anchors
+        out: map object of staggered scores and deltas.
+            scores, deltas = next(out), next(out)
+
+            Each scores has shape [N, A*4, H, W].
+            Each deltas has shape [N, A*4, H, W].
+
+            N is the batch size.
+            A is the shape[0] of base anchors declared in the fpn dict.
+            H, W is the heights and widths of the anchors grid, 
+            based on the stride and input image's height and width.
 
         Returns
         -------
-        all_anchors: (height * width, A, 4) ndarray of anchors spreading over the plane
-        """
+        Generator of list, each list has [boxes, scores].
+
+        Usage
+        -----
+        >>> np.block(list(self._retina_solving(out)))
+        '''
 
         for fpn in self._fpn_anchors:
-            scores, deltas = next(out)[:, fpn[1].shape[0]:, :, :], next(out)
-
-            anchors = self._get_runtime_anchors(*deltas.shape[-2:], *fpn)
+            scores, deltas = next(out)[:, fpn[1].shape[0]:, ...], next(out)
 
             scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
-            deltas = deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))
+            mask = scores.ravel() > self.threshold
 
-            mask = scores.reshape((-1,)) > self.threshold
-            proposals = deltas[mask]
+            anchors = self._get_runtime_anchors(*deltas.shape[-2:], *fpn)[mask]
+            deltas = deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))[mask]
 
-            nonlinear_pred(anchors[mask], proposals)
+            nonlinear_pred(anchors, deltas)
 
-            yield [proposals / self.scale, scores[mask]]
+            yield [deltas / self.scale, scores[mask]]
 
     def _retina_detach(self, out):
         out = map(lambda x: x.asnumpy(), out)
@@ -199,19 +209,22 @@ class MxnetDetectionModel(BaseDetection):
         >>> out = self._retina_forward(frame)
         '''
 
-        # timea = time.perf_counter()
         dst = self._rescale(src)
+
+        timea = time.perf_counter()
         data = array(dst.transpose((2, 0, 1))[None, ...])
+        print(f'inferance: {time.perf_counter() - timea}')
+
         db = mx.io.DataBatch(data=(data, ))
+
         self._forward(db)
         return self._solotion()
-        # print(f'inferance: {time.perf_counter() - timeb}')
 
-    def workflow_inference(self, instream):
+    def workflow_inference(self, instream, shape):
         for source in instream:
             # st = time.perf_counter()
 
-            frame = frombuffer(source, dtype=uint8).reshape(V_H, V_W, V_C)
+            frame = frombuffer(source, dtype=uint8).reshape(shape)
             out = self._retina_forward(frame)
 
             try:
@@ -227,12 +240,11 @@ class MxnetDetectionModel(BaseDetection):
             # st = time.perf_counter()
             detach = self._retina_detach(out)
             # dets = self.non_maximum_selection(detach)  # 1.7 us
-            # print(f'workflow_postprocess: {time.perf_counter() - st}')
+            # print(f'_retina_detach: {time.perf_counter() - st}')
 
             if outstream is None:
                 for res in self._nms_wrapper(detach):
                     # self.margin_clip(res)
-
                     cv2.rectangle(frame, (res[0], res[1]),
                                   (res[2], res[3]), (255, 255, 0))
 
@@ -245,9 +257,10 @@ class MxnetDetectionModel(BaseDetection):
 
 if __name__ == '__main__':
     import sys
+    from numpy import prod
 
-    V_W, V_H, V_C = 640, 480, 3
-    BUFFER_SIZE = V_W * V_H * V_C
+    FRAME_SHAPE = 480, 640, 3
+    BUFFER_SIZE = prod(FRAME_SHAPE)
 
     read = sys.stdin.buffer.read
     write = sys.stdout.buffer.write
@@ -259,6 +272,6 @@ if __name__ == '__main__':
     poster = Thread(target=fd.workflow_postprocess)
     poster.start()
 
-    infer = Thread(target=fd.workflow_inference, args=(camera,))
+    infer = Thread(target=fd.workflow_inference, args=(camera, FRAME_SHAPE,))
     infer.daemon = True
     infer.start()
