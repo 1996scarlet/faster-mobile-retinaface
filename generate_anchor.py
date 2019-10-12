@@ -3,6 +3,7 @@ Generate base anchors on index 0
 """
 import sys
 import numpy as np
+from numpy import zeros, concatenate, float32, tile, repeat, arange, exp
 
 anchors = {
     32: {'SCALES': (32, 16), 'BASE_SIZE': 16, 'RATIOS': (1., ), 'ALLOWED_BORDER': 0},
@@ -11,8 +12,24 @@ anchors = {
 }
 
 
+def generate_runtime_anchors(height, width, stride, base_anchors):
+    A = base_anchors.shape[0]
+
+    all_anchors = zeros((height*width, A, 4), dtype=float32)
+
+    rw = tile(arange(0, width*stride, stride),
+                 height).reshape(-1, 1, 1)
+    rh = repeat(arange(0, height*stride, stride),
+                   width).reshape(-1, 1, 1)
+
+    all_anchors += concatenate((rw, rh, rw, rh), axis=2)
+    all_anchors += base_anchors
+
+    return all_anchors
+
+
 def generate_anchors(base_size=16, ratios=[0.5, 1, 2],
-                     scales=2 ** np.arange(3, 6), stride=16, dense_anchor=False):
+                     scales=2 ** arange(3, 6), stride=16, dense_anchor=False):
     """
     Generate anchor (reference) windows by enumerating aspect ratios X
     scales wrt a reference (0, 0, 15, 15) window.
@@ -45,7 +62,7 @@ def generate_anchors_fpn(dense_anchor=False, cfg=anchors):
                                 stride,
                                 dense_anchor) for stride, value in cfg.items()]
 
-    return dict(zip(cfg.keys(), np.asarray(anchors, dtype=np.float32)))
+    return dict(zip(cfg.keys(), np.array(anchors, dtype=float32)))
 
 
 def _whctrs(anchor):
@@ -66,8 +83,8 @@ def _mkanchors(ws, hs, x_ctr, y_ctr):
     (x_ctr, y_ctr), output a set of anchors (windows).
     """
 
-    ws = ws[:, np.newaxis]
-    hs = hs[:, np.newaxis]
+    ws = ws[:, None]
+    hs = hs[:, None]
     anchors = np.hstack((x_ctr - 0.5 * (ws - 1),
                          y_ctr - 0.5 * (hs - 1),
                          x_ctr + 0.5 * (ws - 1),
@@ -120,12 +137,12 @@ def nonlinear_pred(boxes, box_deltas):
         dy += ctr_y
         dy += 0.5 * heights
 
-        np.exp(dh, out=dh)
+        exp(dh, out=dh)
         dh *= heights
         dh -= 1.0
         dh *= 0.5
 
-        np.exp(dw, out=dw)
+        exp(dw, out=dw)
         dw *= widths
         dw -= 1.0
         dw *= 0.5
@@ -137,4 +154,3 @@ def nonlinear_pred(boxes, box_deltas):
         dy -= dh
         dh += dh
         dh += dy
-

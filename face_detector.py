@@ -5,13 +5,13 @@ import os
 import argparse
 import numpy as np
 import mxnet as mx
-from mxnet import nd
 import cv2
 import time
 from queue import Queue
 
-from generate_anchor import generate_anchors_fpn, nonlinear_pred
+from generate_anchor import generate_anchors_fpn, nonlinear_pred, generate_runtime_anchors
 from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum
+from mxnet.ndarray import waitall, array
 from functools import partial
 
 from threading import Thread
@@ -29,7 +29,7 @@ class BaseDetection:
         self.read_queue = iter(self._queue.get, b'')
 
         self._nms_wrapper = partial(
-            self.non_maximum_suppression, thresh=self.nms_threshold)
+            self.non_maximum_suppression, threshold=self.nms_threshold)
 
     def margin_clip(self, b):
         margin_x = (b[2] - b[0]) * self.margin
@@ -43,15 +43,30 @@ class BaseDetection:
         return np.clip(b, 0, None, out=b)
 
     @staticmethod
-    def non_maximum_suppression(dets, thresh):
-        """
-        greedily select boxes with high confidence and overlap with current maximum <= thresh
-        rule out overlap >= thresh
-        :param dets: [[x1, y1, x2, y2 score]]
-        :param thresh: retain overlap < thresh
-        :return: indexes to keep
-        """
-        # thresh = 0.99
+    def non_maximum_suppression(dets, threshold):
+        ''' ##### Author 1996scarlet@gmail.com
+        merged_non_maximum_suppression
+        Greedily select boxes with high confidence and overlap with threshold.
+        If the boxes' overlap > threshold, we consider they are the same one.
+
+        Parameters
+        ----------
+        dets: ndarray
+            Bounding boxes of shape [N, 5].
+            Each box has [x1, y1, x2, y2, score].
+
+        threshold: float
+            The src scales para.
+
+        Returns
+        -------
+        Generator of kept box, each box has [x1, y1, x2, y2, score].
+
+        Usage
+        -----
+        >>> for res in non_maximum_suppression(dets, thresh):
+        >>>     pass
+        '''
 
         x1, y1, x2, y2, scores = dets.T
 
@@ -72,9 +87,9 @@ class BaseDetection:
             h = maximum(0.0, yy2 - yy1 + 1)
 
             inter = w * h
-            ovr = inter / (areas[keep] - inter + areas[others])
+            overlap = inter / (areas[keep] - inter + areas[others])
 
-            order = others[ovr < thresh]
+            order = others[overlap < threshold]
 
     def non_maximum_selection(self, x):
         return x[:1]
@@ -88,14 +103,14 @@ class BaseDetection:
         ws = boxes[:, 2] - boxes[:, 0] + 1
         hs = boxes[:, 3] - boxes[:, 1] + 1
         if max_size > 0:
-            boxes = np.where(np.minimum(ws, hs) < max_size)[0]
+            boxes = np.where(minimum(ws, hs) < max_size)[0]
         if min_size > 0:
-            boxes = np.where(np.maximum(ws, hs) > min_size)[0]
+            boxes = np.where(maximum(ws, hs) > min_size)[0]
         return boxes
 
 
 class MxnetDetectionModel(BaseDetection):
-    def __init__(self, prefix, epoch, scale, gpu=-1, thd=0.5, margin=0,
+    def __init__(self, prefix, epoch, scale, gpu=-1, thd=0.6, margin=0,
                  nms_thd=0.4, verbose=False):
 
         super().__init__(thd=thd, gpu=gpu, margin=margin, nms_thd=nms_thd, verbose=verbose)
@@ -121,7 +136,14 @@ class MxnetDetectionModel(BaseDetection):
         model.set_params(arg_params, aux_params)
         return model
 
-    def _anchors_plane(self, height, width, stride, base_anchors):
+    def _get_runtime_anchors(self, height, width, stride, base_anchors):
+        key = height, width, stride
+        if key not in self._runtime_anchors:
+            self._runtime_anchors[key] = generate_runtime_anchors(
+                height, width, stride, base_anchors).reshape((-1, 4))
+        return self._runtime_anchors[key]
+
+    def _retina_solving(self, out):
         """
         Parameters
         ----------
@@ -135,35 +157,12 @@ class MxnetDetectionModel(BaseDetection):
         all_anchors: (height * width, A, 4) ndarray of anchors spreading over the plane
         """
 
-        key = (height, width, stride)
+        for fpn in self._fpn_anchors:
+            scores, deltas = next(out)[:, fpn[1].shape[0]:, :, :], next(out)
 
-        def gen_runtime_anchors():
-            A = base_anchors.shape[0]
+            anchors = self._get_runtime_anchors(*deltas.shape[-2:], *fpn)
 
-            all_anchors = np.zeros((height*width, A, 4), dtype=float32)
-
-            rw = np.tile(np.arange(0, width*stride, stride), height)
-            rh = np.repeat(np.arange(0, height*stride, stride), width)
-
-            all_anchors += np.stack((rw, rh, rw, rh),
-                                    axis=1).reshape(height*width, 1, 4)
-            all_anchors += base_anchors
-
-            self._runtime_anchors[key] = all_anchors
-
-            return all_anchors
-
-        return self._runtime_anchors[key] if key in self._runtime_anchors else gen_runtime_anchors()
-
-    def _retina_detach(self, out, scale):
-        out = map(lambda x: x.asnumpy(), out)
-
-        def deal_with_fpn(fpn, scores, deltas):
-            anchors = self._anchors_plane(
-                *deltas.shape[-2:], *fpn).reshape((-1, 4))
-
-            scores = scores[:, fpn[1].shape[0]:, :, :].transpose(
-                (0, 2, 3, 1)).reshape((-1, 1))
+            scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
             deltas = deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))
 
             mask = scores.reshape((-1,)) > self.threshold
@@ -171,9 +170,11 @@ class MxnetDetectionModel(BaseDetection):
 
             nonlinear_pred(anchors[mask], proposals)
 
-            return [proposals / scale, scores[mask]]
+            yield [proposals / self.scale, scores[mask]]
 
-        return block([deal_with_fpn(fpn, next(out), next(out)) for fpn in self._fpn_anchors])
+    def _retina_detach(self, out):
+        out = map(lambda x: x.asnumpy(), out)
+        return block(list(self._retina_solving(out)))
 
     def _retina_forward(self, src):
         ''' ##### Author 1996scarlet@gmail.com
@@ -200,7 +201,7 @@ class MxnetDetectionModel(BaseDetection):
 
         # timea = time.perf_counter()
         dst = self._rescale(src)
-        data = nd.array(dst.transpose((2, 0, 1))[None, ...])
+        data = array(dst.transpose((2, 0, 1))[None, ...])
         db = mx.io.DataBatch(data=(data, ))
         self._forward(db)
         return self._solotion()
@@ -209,13 +210,14 @@ class MxnetDetectionModel(BaseDetection):
     def workflow_inference(self, instream):
         for source in instream:
             # st = time.perf_counter()
+
             frame = frombuffer(source, dtype=uint8).reshape(V_H, V_W, V_C)
             out = self._retina_forward(frame)
 
             try:
                 self.write_queue((frame, out))
             except:
-                nd.waitall()
+                waitall()
                 print('Frame queue full', file=sys.stderr)
 
             # print(f'workflow_inference: {time.perf_counter() - st}')
@@ -223,15 +225,13 @@ class MxnetDetectionModel(BaseDetection):
     def workflow_postprocess(self, outstream=None):
         for frame, out in self.read_queue:
             # st = time.perf_counter()
-            detach = self._retina_detach(out, self.scale)
+            detach = self._retina_detach(out)
             # dets = self.non_maximum_selection(detach)  # 1.7 us
             # print(f'workflow_postprocess: {time.perf_counter() - st}')
 
             if outstream is None:
                 for res in self._nms_wrapper(detach):
-                    st = time.perf_counter()
-                    self.margin_clip(res)
-                    print(f'margin_clip: {time.perf_counter() - st}')
+                    # self.margin_clip(res)
 
                     cv2.rectangle(frame, (res[0], res[1]),
                                   (res[2], res[3]), (255, 255, 0))
