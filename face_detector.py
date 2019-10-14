@@ -11,7 +11,7 @@ from queue import Queue
 
 from generate_anchor import generate_anchors_fpn, nonlinear_pred, generate_runtime_anchors
 from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum
-from mxnet.ndarray import waitall, array
+from mxnet.ndarray import waitall, array, concat
 from functools import partial
 
 from threading import Thread
@@ -127,15 +127,32 @@ class MxnetDetectionModel(BaseDetection):
         self._forward = partial(model.forward, is_train=False)
 
         # ========== Monkey Patch for Mxnet Inference ==========
-        def faster_outputs(self, merge_multi_context=True, begin=0, end=None):
-            for exec_ in self.execs:
-                for out in exec_.outputs:
-                    yield out.asnumpy()
+        def faster_outputs(execs, begin=0, end=None):
+            for exec_ in execs:
+                out = exec_._get_outputs()
+                # scores, deltas = out[0::2], out[1::2]
 
-        setattr(model._exec_group, 'faster_outputs', faster_outputs)
+                res = []
+                shapes = []
 
-        self._solotion = partial(model._exec_group.faster_outputs,
-                                 self=model._exec_group)
+                for fpn, scores, deltas in zip(self._fpn_anchors, out[0::2], out[1::2]):
+                    scores = scores[:, -fpn[1].shape[0]:, :, :]
+
+                    res.append(scores.reshape(-1))
+                    shapes.append(scores.shape)
+                    res.append(deltas.reshape(-1))
+                    shapes.append(deltas.shape)
+                    # a = concat(scores, deltas, dim=1).reshape(-1)
+
+                p = concat(*res, dim=0).asnumpy()
+
+                for shape in shapes:
+                    size = np.prod(shape)
+                    yield p[:size].reshape(shape)
+                    p = p[size:]
+
+        self._solotion = partial(faster_outputs,
+                                 execs=model._exec_group.execs)
 
     def _load_model(self, prefix, epoch):
         sym, arg_params, aux_params = mx.model.load_checkpoint(prefix, epoch)
@@ -179,9 +196,7 @@ class MxnetDetectionModel(BaseDetection):
         '''
 
         for fpn in self._fpn_anchors:
-            # st = time.perf_counter()
-            scores, deltas = next(out)[:, fpn[1].shape[0]:, ...], next(out)
-            # print(f'_retina_detach: {time.perf_counter() - st}')
+            scores, deltas = next(out), next(out)
 
             scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
             mask = scores.ravel() > self.threshold
@@ -249,10 +264,10 @@ class MxnetDetectionModel(BaseDetection):
 
     def workflow_postprocess(self, outstream=None):
         for frame, out in self.read_queue:
-            # st = time.perf_counter()
+            st = time.perf_counter()
             detach = self._retina_detach(out)
             # dets = self.non_maximum_selection(detach)  # 1.7 us
-            # print(f'_retina_detach: {time.perf_counter() - st}')
+            print(f'_retina_detach: {time.perf_counter() - st}')
 
             if outstream is None:
                 for res in self._nms_wrapper(detach):
