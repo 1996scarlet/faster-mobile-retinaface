@@ -10,7 +10,7 @@ import time
 from queue import Queue
 
 from generate_anchor import generate_anchors_fpn, nonlinear_pred, generate_runtime_anchors
-from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum
+from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum, prod
 from mxnet.ndarray import waitall, array, concat
 from functools import partial
 
@@ -113,14 +113,15 @@ class MxnetDetectionModel(BaseDetection):
     def __init__(self, prefix, epoch, scale, gpu=-1, thd=0.6, margin=0,
                  nms_thd=0.4, verbose=False):
 
-        super().__init__(thd=thd, gpu=gpu, margin=margin, nms_thd=nms_thd, verbose=verbose)
+        super().__init__(thd=thd, gpu=gpu, margin=margin,
+                         nms_thd=nms_thd, verbose=verbose)
 
         self.scale = scale
         self._rescale = partial(cv2.resize, dsize=None, fx=self.scale,
                                 fy=self.scale, interpolation=cv2.INTER_NEAREST)
 
         self._ctx = mx.cpu() if self.device < 0 else mx.gpu(self.device)
-        self._fpn_anchors = generate_anchors_fpn().items()
+        self._fpn_anchors = generate_anchors_fpn()
         self._runtime_anchors = {}
 
         model = self._load_model(prefix, epoch)
@@ -129,27 +130,28 @@ class MxnetDetectionModel(BaseDetection):
         # ========== Monkey Patch for Mxnet Inference ==========
         def faster_outputs(execs, begin=0, end=None):
             for exec_ in execs:
-                out = exec_._get_outputs()
-                # scores, deltas = out[0::2], out[1::2]
 
-                res = []
-                shapes = []
+                out = iter(exec_.outputs)
 
-                for fpn, scores, deltas in zip(self._fpn_anchors, out[0::2], out[1::2]):
-                    scores = scores[:, -fpn[1].shape[0]:, :, :]
+                res, shapes = [], []
+
+                for fpn in self._fpn_anchors:
+                    scores = next(out)[:, -fpn.scales_shape:, :,
+                                       :].transpose((0, 2, 3, 1)).reshape((-1, 1))
+                    deltas = next(out).transpose((0, 2, 3, 1))
 
                     res.append(scores.reshape(-1))
                     shapes.append(scores.shape)
+
                     res.append(deltas.reshape(-1))
                     shapes.append(deltas.shape)
-                    # a = concat(scores, deltas, dim=1).reshape(-1)
 
-                p = concat(*res, dim=0).asnumpy()
+                buffer = concat(*res, dim=0).asnumpy()
 
                 for shape in shapes:
-                    size = np.prod(shape)
-                    yield p[:size].reshape(shape)
-                    p = p[size:]
+                    size = prod(shape)
+                    yield buffer[:size].reshape(shape)
+                    buffer = buffer[size:]
 
         self._solotion = partial(faster_outputs,
                                  execs=model._exec_group.execs)
@@ -198,11 +200,13 @@ class MxnetDetectionModel(BaseDetection):
         for fpn in self._fpn_anchors:
             scores, deltas = next(out), next(out)
 
-            scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
             mask = scores.ravel() > self.threshold
 
-            anchors = self._get_runtime_anchors(*deltas.shape[-2:], *fpn)[mask]
-            deltas = deltas.transpose((0, 2, 3, 1)).reshape((-1, 4))[mask]
+            anchors = self._get_runtime_anchors(*deltas.shape[1:3],
+                                                fpn.stride,
+                                                fpn.base_anchors)[mask]
+
+            deltas = deltas.reshape((-1, 4))[mask]
 
             nonlinear_pred(anchors, deltas)
 
@@ -275,8 +279,8 @@ class MxnetDetectionModel(BaseDetection):
                     cv2.rectangle(frame, (res[0], res[1]),
                                   (res[2], res[3]), (255, 255, 0))
 
-                cv2.imshow('res', frame)
-                cv2.waitKey(1)
+                # cv2.imshow('res', frame)
+                # cv2.waitKey(1)
             else:
                 outstream(frame)
                 outstream(detach)
