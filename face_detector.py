@@ -140,7 +140,7 @@ class MxnetDetectionModel(BaseDetection):
                 anchors.append(self._get_runtime_anchors(*deltas.shape[1:3],
                                                          fpn.stride,
                                                          fpn.base_anchors))
-            return concat(*res, dim=0).asnumpy(), concatenate(anchors)
+            return concat(*res, dim=0), concatenate(anchors)
 
         self._solotion = partial(faster_outputs,
                                  execs=model._exec_group.execs)
@@ -186,7 +186,7 @@ class MxnetDetectionModel(BaseDetection):
         >>> np.block(list(self._retina_solving(out)))
         '''
 
-        buffer, anchors = out
+        buffer, anchors = out[0].asnumpy(), out[1]
         mask = buffer[:, 4] > self.threshold
         deltas = buffer[mask]
         nonlinear_pred(anchors[mask], deltas)
@@ -248,7 +248,7 @@ class MxnetDetectionModel(BaseDetection):
             st = time.perf_counter()
             detach = self._retina_detach(out)
             # dets = self.non_maximum_selection(detach)  # 1.7 us
-            print(f'_retina_detach: {time.perf_counter() - st}')
+            print(f'workflow_postprocess: {time.perf_counter() - st}')
 
             if outstream is None:
                 for res in self._nms_wrapper(detach):
