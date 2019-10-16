@@ -128,7 +128,7 @@ def nonlinear_pred(boxes, box_deltas):
         widths += 1.0
         heights += 1.0
 
-        dx, dy, dw, dh = box_deltas.T
+        dx, dy, dw, dh, _ = box_deltas.T
 
         dx *= widths
         dx += ctr_x

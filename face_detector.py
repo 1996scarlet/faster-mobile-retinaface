@@ -129,29 +129,18 @@ class MxnetDetectionModel(BaseDetection):
 
         # ========== Monkey Patch for Mxnet Inference ==========
         def faster_outputs(execs, begin=0, end=None):
-            for exec_ in execs:
+            out, res, anchors = iter(execs[0].outputs), [], []
 
-                out = iter(exec_.outputs)
+            for fpn in self._fpn_anchors:
+                scores = next(out)[:, -fpn.scales_shape:, :,
+                                   :].transpose((0, 2, 3, 1)).reshape((-1, 1))
+                deltas = next(out).transpose((0, 2, 3, 1))
 
-                res, shapes = [], []
-
-                for fpn in self._fpn_anchors:
-                    scores = next(out)[:, -fpn.scales_shape:, :,
-                                       :].transpose((0, 2, 3, 1)).reshape((-1, 1))
-                    deltas = next(out).transpose((0, 2, 3, 1))
-
-                    res.append(scores.reshape(-1))
-                    shapes.append(scores.shape)
-
-                    res.append(deltas.reshape(-1))
-                    shapes.append(deltas.shape)
-
-                buffer = concat(*res, dim=0).asnumpy()
-
-                for shape in shapes:
-                    size = prod(shape)
-                    yield buffer[:size].reshape(shape)
-                    buffer = buffer[size:]
+                res.append(concat(deltas.reshape((-1, 4)), scores, dim=1))
+                anchors.append(self._get_runtime_anchors(*deltas.shape[1:3],
+                                                         fpn.stride,
+                                                         fpn.base_anchors))
+            return concat(*res, dim=0).asnumpy(), concatenate(anchors)
 
         self._solotion = partial(faster_outputs,
                                  execs=model._exec_group.execs)
@@ -171,7 +160,7 @@ class MxnetDetectionModel(BaseDetection):
                 height, width, stride, base_anchors).reshape((-1, 4))
         return self._runtime_anchors[key]
 
-    def _retina_solving(self, out):
+    def _retina_detach(self, out):
         ''' ##### Author 1996scarlet@gmail.com
         Solving bounding boxes.
 
@@ -197,24 +186,12 @@ class MxnetDetectionModel(BaseDetection):
         >>> np.block(list(self._retina_solving(out)))
         '''
 
-        for fpn in self._fpn_anchors:
-            scores, deltas = next(out), next(out)
-
-            mask = scores.ravel() > self.threshold
-
-            anchors = self._get_runtime_anchors(*deltas.shape[1:3],
-                                                fpn.stride,
-                                                fpn.base_anchors)[mask]
-
-            deltas = deltas.reshape((-1, 4))[mask]
-
-            nonlinear_pred(anchors, deltas)
-
-            yield [deltas / self.scale, scores[mask]]
-
-    def _retina_detach(self, out):
-        # out = map(lambda x: x.asnumpy(), out)
-        return block(list(self._retina_solving(out)))
+        buffer, anchors = out
+        mask = buffer[:, 4] > self.threshold
+        deltas = buffer[mask]
+        nonlinear_pred(anchors[mask], deltas)
+        deltas[:, :4] /= self.scale
+        return deltas
 
     def _retina_forward(self, src):
         ''' ##### Author 1996scarlet@gmail.com
@@ -279,8 +256,8 @@ class MxnetDetectionModel(BaseDetection):
                     cv2.rectangle(frame, (res[0], res[1]),
                                   (res[2], res[3]), (255, 255, 0))
 
-                # cv2.imshow('res', frame)
-                # cv2.waitKey(1)
+                cv2.imshow('res', frame)
+                cv2.waitKey(1)
             else:
                 outstream(frame)
                 outstream(detach)
