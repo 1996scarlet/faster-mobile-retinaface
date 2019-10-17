@@ -11,7 +11,7 @@ from queue import Queue
 
 from generate_anchor import generate_anchors_fpn, nonlinear_pred, generate_runtime_anchors
 from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum, prod
-from mxnet.ndarray import waitall, array, concat
+from mxnet.ndarray import waitall, array, concat, from_numpy
 from functools import partial
 
 from threading import Thread
@@ -24,7 +24,7 @@ class BaseDetection:
         self.device = gpu
         self.margin = margin
 
-        self._queue = Queue(4)
+        self._queue = Queue(2)
         self.write_queue = self._queue.put_nowait
         self.read_queue = iter(self._queue.get, b'')
 
@@ -91,12 +91,6 @@ class BaseDetection:
 
             order = others[overlap < threshold]
 
-    def non_maximum_selection(self, x):
-        return x[:1]
-
-    # def detect(self, src, **kwargs):
-    #     raise NotImplementedError('Not Implemented Function: detect')
-
     @staticmethod
     def filter_boxes(boxes, min_size, max_size=-1):
         """ Remove all boxes with any side smaller than min_size """
@@ -110,7 +104,7 @@ class BaseDetection:
 
 
 class MxnetDetectionModel(BaseDetection):
-    def __init__(self, prefix, epoch, scale, gpu=-1, thd=0.6, margin=0,
+    def __init__(self, prefix, epoch, scale=1., gpu=-1, thd=0.6, margin=0,
                  nms_thd=0.4, verbose=False):
 
         super().__init__(thd=thd, gpu=gpu, margin=margin,
@@ -124,31 +118,13 @@ class MxnetDetectionModel(BaseDetection):
         self._fpn_anchors = generate_anchors_fpn()
         self._runtime_anchors = {}
 
-        model = self._load_model(prefix, epoch)
-        self._forward = partial(model.forward, is_train=False)
-
-        # ========== Monkey Patch for Mxnet Inference ==========
-        def faster_outputs(execs, begin=0, end=None):
-            out, res, anchors = iter(execs[0].outputs), [], []
-
-            for fpn in self._fpn_anchors:
-                scores = next(out)[:, -fpn.scales_shape:, :,
-                                   :].transpose((0, 2, 3, 1)).reshape((-1, 1))
-                deltas = next(out).transpose((0, 2, 3, 1))
-
-                res.append(concat(deltas.reshape((-1, 4)), scores, dim=1))
-                anchors.append(self._get_runtime_anchors(*deltas.shape[1:3],
-                                                         fpn.stride,
-                                                         fpn.base_anchors))
-            return concat(*res, dim=0), concatenate(anchors)
-
-        self._solotion = partial(faster_outputs,
-                                 execs=model._exec_group.execs)
+        self.model = self._load_model(prefix, epoch)
+        self.exec_group = self.model._exec_group
 
     def _load_model(self, prefix, epoch):
         sym, arg_params, aux_params = mx.model.load_checkpoint(prefix, epoch)
         model = mx.mod.Module(sym, context=self._ctx, label_names=None)
-        model.bind(data_shapes=[('data', (1, 3, 480, 640))],
+        model.bind(data_shapes=[('data', (1, 3, 1, 1))],
                    for_training=False)
         model.set_params(arg_params, aux_params)
         return model
@@ -174,7 +150,7 @@ class MxnetDetectionModel(BaseDetection):
 
             N is the batch size.
             A is the shape[0] of base anchors declared in the fpn dict.
-            H, W is the heights and widths of the anchors grid, 
+            H, W is the heights and widths of the anchors grid,
             based on the stride and input image's height and width.
 
         Returns
@@ -192,6 +168,23 @@ class MxnetDetectionModel(BaseDetection):
         nonlinear_pred(anchors[mask], deltas)
         deltas[:, :4] /= self.scale
         return deltas
+
+    def _retina_solve(self):
+        out, res, anchors = iter(self.exec_group.execs[0].outputs), [], []
+
+        for fpn in self._fpn_anchors:
+            scores = next(out)[:, -fpn.scales_shape:,
+                               :, :].transpose((0, 2, 3, 1))
+            deltas = next(out).transpose((0, 2, 3, 1))
+
+            res.append(concat(deltas.reshape((-1, 4)),
+                              scores.reshape((-1, 1)), dim=1))
+
+            anchors.append(self._get_runtime_anchors(*deltas.shape[1:3],
+                                                     fpn.stride,
+                                                     fpn.base_anchors))
+
+        return concat(*res, dim=0), concatenate(anchors)
 
     def _retina_forward(self, src):
         ''' ##### Author 1996scarlet@gmail.com
@@ -215,17 +208,24 @@ class MxnetDetectionModel(BaseDetection):
         -----
         >>> out = self._retina_forward(frame)
         '''
+        timea = time.perf_counter()
 
-        dst = self._rescale(src)
+        dst = self._rescale(src).transpose((2, 0, 1))[None, ...]
 
-        # timea = time.perf_counter()
-        data = array(dst.transpose((2, 0, 1))[None, ...])
-        # print(f'inferance: {time.perf_counter() - timea}')
+        if dst.shape != self.model._data_shapes[0].shape:
+            self.exec_group.reshape([mx.io.DataDesc('data', dst.shape)], None)
 
-        db = mx.io.DataBatch(data=(data, ))
-        self._forward(db)
+        self.exec_group.data_arrays[0][0][1][:] = dst.astype(float32)
+        self.exec_group.execs[0].forward(is_train=False)
 
-        return self._solotion()
+        print(f'inferance: {time.perf_counter() - timea}')
+
+        return self._retina_solve()
+
+    def detect(self, image, mode='nms'):
+        out = self._retina_forward(image)
+        detach = self._retina_detach(out)
+        return getattr(self, f'_{mode}_wrapper')(detach)
 
     def workflow_inference(self, instream, shape):
         for source in instream:
@@ -245,10 +245,9 @@ class MxnetDetectionModel(BaseDetection):
 
     def workflow_postprocess(self, outstream=None):
         for frame, out in self.read_queue:
-            st = time.perf_counter()
+            # st = time.perf_counter()
             detach = self._retina_detach(out)
-            # dets = self.non_maximum_selection(detach)  # 1.7 us
-            print(f'workflow_postprocess: {time.perf_counter() - st}')
+            # print(f'workflow_postprocess: {time.perf_counter() - st}')
 
             if outstream is None:
                 for res in self._nms_wrapper(detach):
