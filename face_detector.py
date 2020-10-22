@@ -7,11 +7,11 @@ import numpy as np
 import mxnet as mx
 import cv2
 import time
-from queue import Queue
+from queue import Queue, Full
 
 from generate_anchor import generate_anchors_fpn, nonlinear_pred, generate_runtime_anchors
 from numpy import frombuffer, uint8, concatenate, float32, block, maximum, minimum, prod
-from mxnet.ndarray import waitall, array, concat, from_numpy
+from mxnet.ndarray import waitall, concat
 from functools import partial
 
 from threading import Thread
@@ -24,12 +24,15 @@ class BaseDetection:
         self.device = gpu
         self.margin = margin
 
-        self._queue = Queue(2)
+        self._queue = Queue(200)
         self.write_queue = self._queue.put_nowait
         self.read_queue = iter(self._queue.get, b'')
 
         self._nms_wrapper = partial(self.non_maximum_suppression,
                                     threshold=self.nms_threshold)
+        
+        self._biggest_wrapper = partial(self.find_biggest_box)
+
 
     def margin_clip(self, b):
         margin_x = (b[2] - b[0]) * self.margin
@@ -41,6 +44,11 @@ class BaseDetection:
         b[3] += margin_y
 
         return np.clip(b, 0, None, out=b)
+
+    @staticmethod
+    def find_biggest_box(dets):
+        return max(dets, key=lambda x: x[4]) if dets.size > 0 else None
+        # return max(dets, key=lambda x: x[0]) if dets.size > 0 else None
 
     @staticmethod
     def non_maximum_suppression(dets, threshold):
@@ -208,7 +216,7 @@ class MxnetDetectionModel(BaseDetection):
         -----
         >>> out = self._retina_forward(frame)
         '''
-        timea = time.perf_counter()
+        # timea = time.perf_counter()
 
         dst = self._rescale(src).transpose((2, 0, 1))[None, ...]
 
@@ -218,7 +226,7 @@ class MxnetDetectionModel(BaseDetection):
         self.exec_group.data_arrays[0][0][1][:] = dst.astype(float32)
         self.exec_group.execs[0].forward(is_train=False)
 
-        print(f'inferance: {time.perf_counter() - timea}')
+        # print(f'inferance: {time.perf_counter() - timea}')
 
         return self._retina_solve()
 
@@ -237,7 +245,7 @@ class MxnetDetectionModel(BaseDetection):
 
             try:
                 self.write_queue((frame, out))
-            except:
+            except Full:
                 waitall()
                 print('Frame queue full', file=sys.stderr)
 
@@ -273,8 +281,7 @@ if __name__ == '__main__':
     write = sys.stdout.buffer.write
     camera = iter(partial(read, BUFFER_SIZE), b'')
 
-    fd = MxnetDetectionModel("weights/16and32", 0,
-                             scale=.4, gpu=0, margin=0.15)
+    fd = MxnetDetectionModel("weights/16and32", 0, scale=.4, gpu=-1, margin=0.15)
 
     poster = Thread(target=fd.workflow_postprocess)
     poster.start()
@@ -282,3 +289,13 @@ if __name__ == '__main__':
     infer = Thread(target=fd.workflow_inference, args=(camera, FRAME_SHAPE,))
     infer.daemon = True
     infer.start()
+
+'''
+gst-launch-1.0 -q filesrc location=/home/remilia/ddd.avi ! decodebin name=decode ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
+
+gst-launch-1.0 -q filesrc location=./ddd.mp4 ! h264parse ! ffdec_h264 ! ffmpegcolorspace ! deinterlace ! xvimagesink
+
+gst-launch-1.0 -q filesrc location=./ddd.mp4 ! qtdemux ! queue ! h264parse ! avdec_h264 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
+
+gst-launch-1.0 -q filesrc location=./ddd.mp4 ! qtdemux ! h264parse ! avdec_h264 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
+'''

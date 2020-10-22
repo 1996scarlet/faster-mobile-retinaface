@@ -1,5 +1,4 @@
 import mxnet as mx
-import numpy as np
 from mxnet.contrib import onnx as onnx_mxnet
  
 prefix, epoch = "./R50", 0
@@ -8,6 +7,7 @@ mx.model.save_checkpoint("./R49", 0, sym, arg_params, aux_params)
 
 exit(0)
 
+# import numpy as np
 # sym = './M25-symbol.json'
 # params = './M25-0000.params'
 # input_shape = (1,3,112,112)

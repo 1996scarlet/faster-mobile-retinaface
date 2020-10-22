@@ -1,7 +1,3 @@
-"""
-Generate base anchors on index 0
-"""
-import sys
 import numpy as np
 from numpy import zeros, concatenate, float32, tile, repeat, arange, exp
 
