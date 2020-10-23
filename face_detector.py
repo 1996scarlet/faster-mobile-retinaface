@@ -1,8 +1,6 @@
 #!/usr/bin/python3
 # -*- coding:utf-8 -*-
 
-import os
-import argparse
 import numpy as np
 import mxnet as mx
 import cv2
@@ -289,13 +287,3 @@ if __name__ == '__main__':
     infer = Thread(target=fd.workflow_inference, args=(camera, FRAME_SHAPE,))
     infer.daemon = True
     infer.start()
-
-'''
-gst-launch-1.0 -q filesrc location=/home/remilia/ddd.avi ! decodebin name=decode ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
-
-gst-launch-1.0 -q filesrc location=./ddd.mp4 ! h264parse ! ffdec_h264 ! ffmpegcolorspace ! deinterlace ! xvimagesink
-
-gst-launch-1.0 -q filesrc location=./ddd.mp4 ! qtdemux ! queue ! h264parse ! avdec_h264 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
-
-gst-launch-1.0 -q filesrc location=./ddd.mp4 ! qtdemux ! h264parse ! avdec_h264 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
-'''

@@ -4,35 +4,49 @@
 
 [![Language grade: Python](https://img.shields.io/lgtm/grade/python/g/1996scarlet/faster-mobile-retinaface.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/1996scarlet/faster-mobile-retinaface/context:python)
 ![License](https://badgen.net/github/license/1996scarlet/faster-mobile-retinaface)
+![CVPR](https://badgen.net/badge/CVPR/2020/red)
 
-100% Python3 reimplementation of [RetinaFace](https://github.com/deepinsight/insightface/tree/master/RetinaFace),
+100% Python3 reimplementation of [RetinaFace](https://github.com/deepinsight/insightface/tree/master/RetinaFace), a solid single-shot face localisation framework in [CVPR 2020](https://openaccess.thecvf.com/content_CVPR_2020/html/Deng_RetinaFace_Single-Shot_Multi-Level_Face_Localisation_in_the_Wild_CVPR_2020_paper.html).
 
-* Replacing cuda anchors generator with numpy api.
-* [RetinaFace: Single-stage Dense Face Localisation in the Wild](https://arxiv.org/abs/1905.00641)
+* Replaced CUDA based anchor generator functions with NumPy APIs.
+* Stored runtime anchors via dict to avoid duplicate counting.
+* Optimized NMS algorithm through vector calculation methods.
+* Reduced FPN layers and anchor density for middle-close range detection.
+* Used low-level Mxnet APIs to speed up the inference process.
 
 ## Getting Start
+
+### GStreamer Installation (Optional)
+
+Recommended
+
+* [Install gstreamer for reading videos](https://gstreamer.freedesktop.org/documentation/installing/on-linux.html?gi-language=c)
+
+    ``` bash
+    sudo apt-get install libgstreamer1.0-0 gstreamer1.0-plugins-base\
+      gstreamer1.0-plugins-good gstreamer1.0-plugins-bad\
+      gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-doc\
+      gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl\
+      gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
+    ```
+
+### Running for video files
+
+``` bash
+gst-launch-1.0 -q filesrc location=$YOUR_FILE_PATH ! qtdemux ! h264parse ! avdec_h264 !video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink |python3 face_detector.py
+```
+
+### Real-Time Capture via Webcam
+
+* Testing on usb camera 0  &nbsp; (**Be Careful About `!` and `|`**)
+
+    ``` bash
+    gst-launch-1.0 -q v4l2src device=/dev/video0 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
+    ```
 
 ### For Jetson-Nano
 
 [Install MXNet on a Jetson](https://mxnet.apache.org/get_started/jetson_setup)
-
-* [Install gstreamer for reading videos](https://gstreamer.freedesktop.org/documentation/installing/on-linux.html?gi-language=c)
-
-    ```shell
-    sudo apt-get install libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-doc gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
-    ```
-
-* Testing on usb camera 0  &nbsp; (**Be Careful About `!` and `|`**)
-
-    ```shell
-    gst-launch-1.0 -q v4l2src device=/dev/video0 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
-    ```
-
-* For video files testing:
-
-    ```bash
-    gst-launch-1.0 -q filesrc location=$YOUR_FILE_PATH ! qtdemux ! h264parse ! avdec_h264 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
-    ```
 
 ## Why Should We Use Faster-RetinaFace
 
