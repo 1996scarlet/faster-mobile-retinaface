@@ -16,69 +16,60 @@
 
 ## Getting Start
 
-### GStreamer Installation (Optional)
+### Requirements
 
-Recommended
+* [Install GStreamer](https://gstreamer.freedesktop.org/documentation/installing/on-linux.html?gi-language=c) for reading videos (Optional)
+* Mxnet >= 1.5.0 (preferably CUDA based package)
+* Python >= 3.6
+* opencv-python
 
-* [Install gstreamer for reading videos](https://gstreamer.freedesktop.org/documentation/installing/on-linux.html?gi-language=c)
+While not required, for optimal performance, it is highly recommended to run the code using a CUDA enabled GPU.
 
-    ``` bash
-    sudo apt-get install libgstreamer1.0-0 gstreamer1.0-plugins-base\
-      gstreamer1.0-plugins-good gstreamer1.0-plugins-bad\
-      gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-doc\
-      gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl\
-      gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
-    ```
-
-### Running for video files
+### Running for Video Files
 
 ``` bash
-gst-launch-1.0 -q filesrc location=$YOUR_FILE_PATH ! qtdemux ! h264parse ! avdec_h264 !video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink |python3 face_detector.py
+gst-launch-1.0 -q filesrc location=$YOUR_FILE_PATH !\
+  qtdemux ! h264parse ! avdec_h264 !\
+  video/x-raw, width=640, height=480 ! videoconvert !\
+  video/x-raw, format=BGR ! fdsink | python3 face_detector.py
 ```
 
-### Real-Time Capture via Webcam
+### Real-Time Capturing via Webcam
 
-* Testing on usb camera 0  &nbsp; (**Be Careful About `!` and `|`**)
+``` bash
+gst-launch-1.0 -q v4l2src device=/dev/video0 !\
+  video/x-raw, width=640, height=480 ! videoconvert !\
+  video/x-raw, format=BGR ! fdsink | python3 face_detector.py
+```
 
-    ``` bash
-    gst-launch-1.0 -q v4l2src device=/dev/video0 ! video/x-raw, width=640, height=480 ! videoconvert ! video/x-raw, format=BGR ! fdsink | python3 face_detector.py
-    ```
+### Some Tips
 
-### For Jetson-Nano
+* Be Careful About `!` and `|`
+* Decoding the H.264 (or other format) stream using **CPU** can cost much. I'd suggest using your **NVIDIA GPU** for decoding acceleration. See [Issues#5](https://github.com/1996scarlet/faster-mobile-retinaface/issues/5) and [nvbugs](https://forums.developer.nvidia.com/t/gstreamer-lockup-with-h-264-encoder-from-nvarguscamerasrc/154942) for more details.
+* For Jetson-Nano, following [Install MXNet on a Jetson](https://mxnet.apache.org/get_started/jetson_setup) to prepare your envoriment.
 
-[Install MXNet on a Jetson](https://mxnet.apache.org/get_started/jetson_setup)
+## Methods and Experiments
 
-## Why Should We Use Faster-RetinaFace
+For middle-close range face detection, appropriately removing FPN layers and reducing the density of anchors could count-down the overall computational complexity. In addition, low-level APIs are used at preprocessing stage to bypass unnecessary format checks. While inferencing, runtime anchors are cached to avoid repeat calculations. More over, considerable speeding up can be obtained through vector acceleration and NMS algorithm improvement at post-processing stage.
 
-For middle-close range face detection,
+Experiments have been carried out via GTX 1660Ti with CUDA 10.2 on KDE-Ubuntu 19.10.
 
-去掉landmark分支
-
-FPN层数削减 金字塔层数
-
-锚框数量降低
-
-对于图像分辨率适中且距离相对较近的应用场景, 可以适当精简锚框的种类与数量以降低运算量.
-
-的人脸检测
-
-## Experiments
-
-Plan | Inference | Postprocess | Throughput Capacity (FPS)
---------|-----|--------|---------
-9750HQ+1660TI | 0.9ms | 1.5ms | 500~1000
-Jetson-Nano | 4.6ms | 11.4ms | 80~200
-
-If the queue is bigger enough, the throughput capacity can reach the highest.
-
-包括预处理, 推断, 后处理. 由于分辨率上升时, 推断速度会显著增长, 我们重点优化的预处理与后处理过程, 在整个处理过程中的占比降低, 因此加速效果降低. GTX 1660Ti with CUDA 10.2 on Platform KDE UBUNTU 20.04
-
-VGA-Scale | RetinaFace | Faster RetinaFace | Speed Up
+Scale | RetinaFace | Faster RetinaFace | Speed Up
 --------|-----|--------|---------
 0.1 | 2.854ms | 2.155ms | 32%
 0.4 | 3.481ms | 2.916ms | 19%
 1.0 | 5.743ms | 5.413ms | 6.1%
 2.0 | 22.351ms | 20.599ms | 8.5%
+
+Results of several scale factors at VGA resolution show that our method can speed up by 32%.
+As real resolution increases, the proportion of feature extraction time spent in the measurement process will increase significantly, which causes our acceleration effect to be diluted.
+
+Plantform | Inference | Postprocess | Throughput Capacity
+--------|-----|--------|---------
+9750HQ+1660TI | 0.9ms | 1.5ms | 500~1000fps
+Jetson-Nano | 4.6ms | 11.4ms | 80~200fps
+
+Theoretically speaking, throughput capacity can reach the highest while the queue is bigger enough.
 
 ## Citation
 
