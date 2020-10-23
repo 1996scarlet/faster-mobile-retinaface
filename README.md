@@ -3,8 +3,8 @@
 ![Image of PR](docs/images/PR.webp)
 
 [![Language grade: Python](https://img.shields.io/lgtm/grade/python/g/1996scarlet/faster-mobile-retinaface.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/1996scarlet/faster-mobile-retinaface/context:python)
-![License](https://badgen.net/github/license/1996scarlet/faster-mobile-retinaface)
-![CVPR](https://badgen.net/badge/CVPR/2020/red)
+[![License](https://badgen.net/github/license/1996scarlet/faster-mobile-retinaface)](LICENSE.md)
+[![CVPR](https://badgen.net/badge/CVPR/2020/red)](https://openaccess.thecvf.com/content_CVPR_2020/html/Deng_RetinaFace_Single-Shot_Multi-Level_Face_Localisation_in_the_Wild_CVPR_2020_paper.html)
 
 100% Python3 reimplementation of [RetinaFace](https://github.com/deepinsight/insightface/tree/master/RetinaFace), a solid single-shot face localisation framework in [CVPR 2020](https://openaccess.thecvf.com/content_CVPR_2020/html/Deng_RetinaFace_Single-Shot_Multi-Level_Face_Localisation_in_the_Wild_CVPR_2020_paper.html).
 
