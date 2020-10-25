@@ -51,7 +51,6 @@ class BaseDetection:
     @staticmethod
     def non_maximum_suppression(dets, threshold):
         ''' ##### Author 1996scarlet@gmail.com
-        merged_non_maximum_suppression
         Greedily select boxes with high confidence and overlap with threshold.
         If the boxes' overlap > threshold, we consider they are the same one.
 
@@ -82,7 +81,7 @@ class BaseDetection:
         while order.size > 0:
             keep, others = order[0], order[1:]
 
-            yield dets[keep]
+            yield np.copy(dets[keep])
 
             xx1 = maximum(x1[keep], x1[others])
             yy1 = maximum(y1[keep], y1[others])

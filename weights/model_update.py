@@ -1,3 +1,15 @@
+import numpy as np
+
+order = np.array([3,5,2,4,1,0])
+
+ovr = 
+
+a = np.arange(9)
+inds = np.where(a > 5)[0]
+
+print(inds + 1)
+exit(0)
+
 import mxnet as mx
 from mxnet.contrib import onnx as onnx_mxnet
  
