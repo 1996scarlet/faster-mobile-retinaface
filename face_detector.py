@@ -4,7 +4,6 @@
 import numpy as np
 import mxnet as mx
 import cv2
-import time
 from queue import Queue, Full
 
 from generate_anchor import generate_anchors_fpn, nonlinear_pred, generate_runtime_anchors
